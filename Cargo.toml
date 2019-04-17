@@ -1,0 +1,24 @@
+[package]
+name = "opus-voip-traffic"
+version = "0.1.0"
+authors = ["Kyle Simpson <kyleandrew.simpson@gmail.com>"]
+edition = "2018"
+
+[profile.release]
+lto = true
+
+[dependencies]
+bincode = "1"
+byteorder = "1"
+clap = "2"
+crossbeam = "0.7"
+env_logger = "0.6"
+log = "0.4"
+net2 = "0.2"
+parking_lot = "0.7"
+rand = "0.6"
+rayon = "1"
+serde = { version = "1", features = ["derive"] }
+
+[dependencies.rurtp]
+git = "https://github.com/AtheMathmo/rurtp.git"
