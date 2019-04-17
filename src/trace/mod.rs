@@ -9,7 +9,6 @@ use std::{
 		File,
 	},
 	path::PathBuf,
-	time::Instant,
 	sync::Arc,
 };
 
@@ -41,7 +40,7 @@ impl TraceHolder {
 		self.paths.len()
 	}
 
-	pub fn get_trace<'a>(&self, i: usize) -> MemoTrace {
+	pub fn get_trace(&self, i: usize) -> MemoTrace {
 		// IDEA:
 		// * Try to acquire a Write. 
 		// * If fail, guaranteed to be safe to use a Read later.
@@ -67,7 +66,7 @@ impl TraceHolder {
 	}
 }
 
-pub fn read_traces_memo(base_dir: &String) -> TraceHolder {
+pub fn read_traces_memo(base_dir: &str) -> TraceHolder {
 	let file_entries: Vec<PathBuf> = fs::read_dir(&format!("{}/{}", base_dir, TRACE_DIR))
 		.expect("Couldn't read files in trace directory...")
 		.filter_map(|x| if let Ok(x) = x {
@@ -80,7 +79,7 @@ pub fn read_traces_memo(base_dir: &String) -> TraceHolder {
 	TraceHolder::new(file_entries)
 }
 
-pub fn read_traces(base_dir: &String) -> Vec<Trace> {
+pub fn read_traces(base_dir: &str) -> Vec<Trace> {
 	let file_entries: Vec<PathBuf> = fs::read_dir(&format!("{}/{}", base_dir, TRACE_DIR))
 		.expect("Couldn't read files in trace directory...")
 		.filter_map(|x| if let Ok(x) = x {
@@ -90,8 +89,7 @@ pub fn read_traces(base_dir: &String) -> Vec<Trace> {
 			None
 		}).collect();
 
-	//file_entries.par_iter()
-	file_entries.iter()
+	file_entries.par_iter()
 		.map(File::open)
 		.filter_map(warn_and_unpack)
 		.map(bincode::deserialize_from)

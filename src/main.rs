@@ -1,4 +1,4 @@
-use clap::{App, Arg, ArgMatches};
+use clap::{App, Arg};
 use opus_voip_traffic::Config;
 use std::{
 	net::ToSocketAddrs,
@@ -66,6 +66,9 @@ fn main() {
 				.short("r")
 				.long("randomise")
 				.help("Randomise call duration."))
+			.arg(Arg::with_name("constant")
+				.long("constant")
+				.help("Constantly generate traffic."))
 
 			// Concurrent execution strains.
 			.arg(Arg::with_name("thread-count")
@@ -128,6 +131,8 @@ fn main() {
 
 	let randomise_duration = matches.is_present("randomise");
 
+	let constant = matches.is_present("constant");
+
 	let thread_count = matches.value_of_lossy("thread-count")
 		.expect("Thread count always guaranteed to exist.")
 		.parse::<usize>()
@@ -159,6 +164,7 @@ fn main() {
 		duration_lb,
 		duration_ub,
 		randomise_duration,
+		constant,
 
 		thread_count,
 

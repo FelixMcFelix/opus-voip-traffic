@@ -17,6 +17,7 @@ pub struct Config {
 	pub duration_lb: Duration,
 	pub duration_ub: Option<Duration>,
 	pub randomise_duration: bool,
+	pub constant: bool,
 
 	// Concurrent execution strains.
 	pub thread_count: usize,
