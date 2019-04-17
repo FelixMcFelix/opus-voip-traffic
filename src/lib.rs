@@ -12,6 +12,10 @@ use byteorder::{
 	ReadBytesExt,
 	WriteBytesExt,
 };
+use crossbeam::channel::{
+	self,
+	Receiver,
+};
 use net2::{
 	unix::UnixUdpBuilderExt,
 	UdpBuilder,
@@ -24,7 +28,10 @@ use rand::{
 };
 use std::{
 	collections::HashMap,
-	io::Result as IoResult,
+	io::{
+		self,
+		Result as IoResult,
+	},
 	net::{
 		UdpSocket,
 		SocketAddr,
@@ -53,14 +60,22 @@ fn make_udp_socket(port: u16, non_block: bool) -> IoResult<UdpSocket> {
 }
 
 pub fn client(config: &Config) {
-	//let ts = trace::read_traces(&config.base_dir);
 	let ts = trace::read_traces_memo(&config.base_dir);
+	let (kill_tx, kill_rx) = channel::bounded(1);
 
 	crossbeam::scope(|s| {
 		for _i in 0..config.thread_count {
 			s.spawn(|_| {
-				inner_client(&config, &ts);
+				inner_client(&config, &ts, &kill_rx);
 			});
+		}
+
+		if config.constant {
+			let stdin = io::stdin();
+			let mut s = String::new();
+
+			stdin.read_line(&mut s);
+			kill_tx.send(());
 		}
 	}).unwrap();
 }
@@ -68,7 +83,7 @@ pub fn client(config: &Config) {
 const CMAC_BYTES: usize = 16;
 const RTP_BYTES: usize = 12;
 
-fn inner_client(config: &Config, ts: &TraceHolder) {//&Vec<Trace>) {
+fn inner_client(config: &Config, ts: &TraceHolder, kill_signal: &Receiver<()>) {
 	let mut rng = thread_rng();
 
 	let draw = Uniform::new(0, ts.len());
@@ -103,9 +118,12 @@ fn inner_client(config: &Config, ts: &TraceHolder) {//&Vec<Trace>) {
 	// IDEA: if we haven't passed the LB then draw another entry.
 	// BUT if there's a RANDOM UB defined, we need to keep drawing to hit that.
 	let mut not_gone = true;
-	while not_gone || start.elapsed() < config.duration_lb || (config.randomise_duration && start.elapsed() < end.unwrap()) {
+	while not_gone || config.constant || start.elapsed() < config.duration_lb || (config.randomise_duration && start.elapsed() < end.unwrap()) {
 		not_gone = false;
-		let el_lock = ts.get_trace(draw.sample(&mut rng));
+		let chosen_el = draw.sample(&mut rng);
+		info!("Chose trace no: {}", chosen_el);
+
+		let el_lock = ts.get_trace(chosen_el);
 		let el_guard = el_lock.read();
 
 		let el = el_guard.as_ref()
@@ -142,6 +160,17 @@ fn inner_client(config: &Config, ts: &TraceHolder) {//&Vec<Trace>) {
 			}
 
 			loop {
+				// may need to exit early
+				if let Some(end) = end {
+					if start.elapsed() >= end {
+						return;
+					}
+				}
+
+				if kill_signal.is_full() {
+					return;
+				}
+
 				// send keep alive if needed.
 				if ka_time.map(|t: Instant| t.elapsed() >= ka_freq).unwrap_or(true) {
 					(&mut ka_buf[..]).write_u64::<LittleEndian>(ka_count)
@@ -163,13 +192,6 @@ fn inner_client(config: &Config, ts: &TraceHolder) {//&Vec<Trace>) {
 
 				thread::sleep(Duration::from_millis(sleep_time.min(20)));
 				sleep_time -= 20;
-			}
-
-			// may need to exit early
-			if let Some(end) = end {
-				if start.elapsed() >= end {
-					return;
-				}
 			}
 		}
 	}

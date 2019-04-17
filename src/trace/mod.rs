@@ -27,8 +27,11 @@ pub struct TraceHolder {
 
 impl TraceHolder {
 	fn new(paths: Vec<PathBuf>) -> Self {
-		let mut data = Vec::new();
-		data.resize(paths.len(), Arc::new(RwLock::new(None)));
+		let mut data = Vec::with_capacity(paths.len());
+		
+		for _ in 0..paths.len() {
+			data.push(Arc::new(RwLock::new(None)));
+		}
 
 		Self {
 			paths,
