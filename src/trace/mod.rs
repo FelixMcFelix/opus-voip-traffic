@@ -1,5 +1,7 @@
 mod packet_format;
 
+use crate::constants::*;
+
 use parking_lot::RwLock;
 use rayon::prelude::*;
 use std::{
@@ -13,8 +15,6 @@ use std::{
 };
 
 pub(crate) use packet_format::*;
-
-const TRACE_DIR: &str = "traces/";
 
 pub type Trace = Vec<PacketChainLink>;
 pub type MemoTrace = Arc<RwLock<Option<Trace>>>;
@@ -66,6 +66,10 @@ impl TraceHolder {
 		}
 
 		locked_value
+	}
+
+	pub fn get_path(&self, i: usize) -> Option<&PathBuf> {
+		self.paths.get(i)
 	}
 }
 

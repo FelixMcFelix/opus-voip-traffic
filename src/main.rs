@@ -79,6 +79,11 @@ fn main() {
 				.takes_value(true)
 				.default_value("1"))
 
+			// Dry-run mode, for stats gathering.
+			.arg(Arg::with_name("stats")
+				.long("stats")
+				.help("Generate overall trace statistics."))
+
 			// Server configs.
 			.arg(Arg::with_name("min-room-size")
 				.long("min-room-size")
@@ -175,6 +180,8 @@ fn main() {
 
 	if matches.is_present("server") {
 		opus_voip_traffic::server(&config);
+	} else if matches.is_present("stats") {
+		opus_voip_traffic::gen_stats(&config);
 	} else {
 		opus_voip_traffic::client(&config);
 	}

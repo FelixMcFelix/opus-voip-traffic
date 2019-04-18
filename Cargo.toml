@@ -16,6 +16,7 @@ env_logger = "0.6"
 log = "0.4"
 net2 = "0.2"
 parking_lot = "0.7"
+pnet = "0.22"
 rand = "0.6"
 rayon = "1"
 serde = { version = "1", features = ["derive"] }

@@ -2,9 +2,14 @@
 extern crate log;
 
 mod config;
+mod constants;
+mod stats;
 mod trace;
 
 pub use config::Config;
+use constants::*;
+use stats::CallStats;
+use trace::*;
 
 use byteorder::{
 	LittleEndian,
@@ -36,13 +41,13 @@ use std::{
 		UdpSocket,
 		SocketAddr,
 	},
+	num::NonZeroU16,
 	thread,
 	time::{
 		Duration,
 		Instant,
 	},
 };
-use trace::*;
 
 fn make_udp_socket(port: u16, non_block: bool) -> IoResult<UdpSocket> {
 	let out = UdpBuilder::new_v4()?;
@@ -80,9 +85,6 @@ pub fn client(config: &Config) {
 	}).unwrap();
 }
 
-const CMAC_BYTES: usize = 16;
-const RTP_BYTES: usize = 12;
-
 fn inner_client(config: &Config, ts: &TraceHolder, kill_signal: &Receiver<()>) {
 	let mut rng = thread_rng();
 
@@ -91,9 +93,9 @@ fn inner_client(config: &Config, ts: &TraceHolder, kill_signal: &Receiver<()>) {
 	let mut buf = [0u8; 1560];
 	let mut rxbuf = [0u8; 1560];
 
-	let ka_freq = Duration::from_secs(5);
+	let ka_freq = Duration::from_millis(KEEPALIVE_FREQ_MS);
 	let mut ka_count: u64 = 1;
-	let mut ka_buf = [0u8; 8];
+	let mut ka_buf = [0u8; KEEPALIVE_SIZE];
 	let mut ka_time = None;
 
 	let start = Instant::now();
@@ -132,23 +134,11 @@ fn inner_client(config: &Config, ts: &TraceHolder, kill_signal: &Receiver<()>) {
 		// FIXME: need to draw more sessions if we hit end prematurely...
 		let mut last_size = None;
 		for pkt in el {
-			use PacketChainLink::*;
-
-			let (mut sleep_time, pkt_size) = match pkt {
-				Packet(p) => {
-					let p = usize::from(p.get());
-					last_size = Some(p);
-					(0, p)
-				},
-				Missing(_t) => {
-					(0, last_size.unwrap_or(0))
-				},
-				Silence(t) => {
-					info!("Waiting for {:?}ms.", t);
-					let out = u64::from(*t);
-					(out.min(config.max_silence.unwrap_or(out)), 0)
-				}
-			};
+			let (mut sleep_time, pkt_size) = handle_link(
+				&pkt,
+				&mut last_size,
+				&config.max_silence,
+			);
 
 			sleep_time += 20;
 
@@ -267,4 +257,106 @@ fn classify(bytes: &[u8]) -> PacketType {
 		8 => PacketType::KeepAlive,
 		_ => PacketType::Rtp,
 	}
+}
+
+pub fn gen_stats(config: &Config) {
+	let ts = trace::read_traces_memo(&config.base_dir);
+
+	// crossbeam::scope(|s| {
+		for i in 0..ts.len() {
+			// |j| s.spawn(|_| {
+				inner_stats(&config, &ts, i);
+			// });
+		}
+	// }).unwrap();
+}
+
+// Could refactor this to reduce code dup, but I think
+// that might be complex (dummy senders etc...).
+fn inner_stats(config: &Config, ts: &TraceHolder, i: usize) {
+	// Will be easiest to maintain a callstat for each,
+	// since keepalives will make things trickier undoubtedly...
+	let mut stats = vec![(CallStats::new(), None)];
+
+	let el_lock = ts.get_trace(i);
+	let el_guard = el_lock.read();
+
+	let el = el_guard.as_ref()
+		.expect("File should have been filled in if a read lock was fulfilled...");
+
+	if config.max_silence.is_some() {
+		stats.push((CallStats::new(), config.max_silence.clone()));
+	}
+
+	for (ref mut stat, ref max_silence) in &mut stats {
+		let mut last_size = None;
+		let mut ka_time = KEEPALIVE_FREQ_MS;
+
+		for pkt in el {
+			let (mut sleep_time, pkt_size) = handle_link(
+				&pkt,
+				&mut last_size,
+				&max_silence,
+			);
+
+			if pkt_size > 0 {
+				stat.register_voice(pkt_size);
+			}
+
+			loop {
+				// send keep alive if needed.
+				if ka_time >= KEEPALIVE_FREQ_MS {
+					stat.register_keepalive();
+					ka_time = 0;
+				}
+
+				if sleep_time == 0 {
+					break;
+				}
+
+				let time_til_ka = KEEPALIVE_FREQ_MS - ka_time;
+				let micro_sleep_time = sleep_time
+					.min(20)
+					.min(time_til_ka);
+
+				// Do I need to take keepalive time into account?
+				stat.sleep(Duration::from_millis(micro_sleep_time));
+				sleep_time -= micro_sleep_time;
+				ka_time += micro_sleep_time;
+			}
+		}
+	}
+
+	println!("{:?}", stats);
+	println!("{:?} / 96kbps",
+		stats.iter().map(|(stat, _cap)| stat.mbps() * 1024.0).collect::<Vec<_>>()
+	);
+}
+
+#[inline]
+fn handle_link(
+	pkt: &PacketChainLink,
+	last_size: &mut Option<usize>,
+	max_silence: &Option<u64>,
+) -> (u64, usize) {
+	use PacketChainLink::*;
+
+	let (mut sleep_time, pkt_size) = match pkt {
+		Packet(p) => {
+			let p = usize::from(p.get());
+			*last_size = Some(p);
+			(0, p)
+		},
+		Missing(_t) => {
+			(0, last_size.unwrap_or(0))
+		},
+		Silence(t) => {
+			let out = u64::from(*t);
+			(out.min(max_silence.unwrap_or(out)), 0)
+		}
+	};
+
+	sleep_time += 20;
+
+	(sleep_time, pkt_size)
 }
