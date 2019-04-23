@@ -41,7 +41,6 @@ use std::{
 		UdpSocket,
 		SocketAddr,
 	},
-	num::NonZeroU16,
 	thread,
 	time::{
 		Duration,
@@ -132,11 +131,12 @@ fn inner_client(config: &Config, ts: &TraceHolder, kill_signal: &Receiver<()>) {
 			.expect("File should have been filled in if a read lock was fulfilled...");
 
 		// FIXME: need to draw more sessions if we hit end prematurely...
-		let mut last_size = None;
+		let mut stat = CallStats::new();
+
 		for pkt in el {
 			let (mut sleep_time, pkt_size) = handle_link(
-				&pkt,
-				&mut last_size,
+				*pkt,
+				&mut stat,
 				&config.max_silence,
 			);
 
@@ -176,12 +176,12 @@ fn inner_client(config: &Config, ts: &TraceHolder, kill_signal: &Receiver<()>) {
 					info!("Received {:?} bytes from {:?}", sz, addr);
 				}
 
-				if sleep_time <= 0 {
+				if sleep_time == 0 {
 					break;
 				}
 
 				thread::sleep(Duration::from_millis(sleep_time.min(20)));
-				sleep_time -= 20;
+				sleep_time = sleep_time.checked_sub(20).unwrap_or(0);
 			}
 		}
 	}
@@ -261,19 +261,61 @@ fn classify(bytes: &[u8]) -> PacketType {
 
 pub fn gen_stats(config: &Config) {
 	let ts = trace::read_traces_memo(&config.base_dir);
+	let mut t_err = 0.0;
 
+	let mut kbps_holders = vec![vec![]];
+	if config.max_silence.is_some() {
+		kbps_holders.push(vec![]);
+	}
+
+	// FIXME: not playing nicely
 	// crossbeam::scope(|s| {
 		for i in 0..ts.len() {
 			// |j| s.spawn(|_| {
-				inner_stats(&config, &ts, i);
+				let (kbps, d) = inner_stats(&config, &ts, i);
+				if d.is_finite() {
+					t_err += d;
+				}
+
+				for (j, measure) in kbps.iter().enumerate() {
+					if measure.is_finite() {
+						kbps_holders[j].push(*measure);
+					}
+				}
+
 			// });
 		}
 	// }).unwrap();
+
+	println!("Missing Pkt Prediction Error: {:?}", t_err);
+
+	for (i, holder) in kbps_holders.iter_mut().enumerate() {
+		holder.sort_by(|a, b| a.partial_cmp(b).unwrap());
+		let length = holder.len();
+
+		let index = length / 2;
+		let median = if length % 2 == 0 {
+			(holder[index] + holder[index+1]) / 2.0
+		} else {
+			holder[index]
+		};
+
+		let sum: f64 = holder.iter().sum();
+
+		let mean: f64 = sum / length as f64;
+
+		println!("[{}] Mean: {} ({}), Median: {} ({})",
+			if i == 0 {"True"} else {"MaxSilence"},
+			mean, mean / 96.0,
+			median, median / 96.0,
+		);
+		// println!("{:?}", holder);
+	}
 }
 
 // Could refactor this to reduce code dup, but I think
 // that might be complex (dummy senders etc...).
-fn inner_stats(config: &Config, ts: &TraceHolder, i: usize) {
+fn inner_stats(config: &Config, ts: &TraceHolder, i: usize) -> (Vec<f64>, f64) {
 	// Will be easiest to maintain a callstat for each,
 	// since keepalives will make things trickier undoubtedly...
 	let mut stats = vec![(CallStats::new(), None)];
@@ -285,23 +327,18 @@ fn inner_stats(config: &Config, ts: &TraceHolder, i: usize) {
 		.expect("File should have been filled in if a read lock was fulfilled...");
 
 	if config.max_silence.is_some() {
-		stats.push((CallStats::new(), config.max_silence.clone()));
+		stats.push((CallStats::new(), config.max_silence));
 	}
 
 	for (ref mut stat, ref max_silence) in &mut stats {
-		let mut last_size = None;
 		let mut ka_time = KEEPALIVE_FREQ_MS;
 
 		for pkt in el {
-			let (mut sleep_time, pkt_size) = handle_link(
-				&pkt,
-				&mut last_size,
+			let (mut sleep_time, _pkt_size) = handle_link(
+				*pkt,
+				stat,
 				&max_silence,
 			);
-
-			if pkt_size > 0 {
-				stat.register_voice(pkt_size);
-			}
 
 			loop {
 				// send keep alive if needed.
@@ -327,36 +364,38 @@ fn inner_stats(config: &Config, ts: &TraceHolder, i: usize) {
 		}
 	}
 
-	println!("{:?}", stats);
-	println!("{:?} / 96kbps",
-		stats.iter().map(|(stat, _cap)| stat.mbps() * 1024.0).collect::<Vec<_>>()
-	);
+	// println!("{:?}", stats);
+	let kbps = stats.iter().map(|(stat, _cap)| stat.mbps() * 1024.0).collect::<Vec<_>>();
+
+	// println!("{:?} / 96kbps", kbps);
+
+	let errs = stats.iter().map(|(stat, _cap)| stat.predictor_rms()).collect::<Vec<_>>();
+
+	(kbps, errs[0])
 }
 
 #[inline]
 fn handle_link(
-	pkt: &PacketChainLink,
-	last_size: &mut Option<usize>,
+	pkt: PacketChainLink,
+	stat: &mut CallStats,
 	max_silence: &Option<u64>,
 ) -> (u64, usize) {
 	use PacketChainLink::*;
 
-	let (mut sleep_time, pkt_size) = match pkt {
-		Packet(p) => {
-			let p = usize::from(p.get());
-			*last_size = Some(p);
-			(0, p)
-		},
-		Missing(_t) => {
-			(0, last_size.unwrap_or(0))
-		},
+	let (mut sleep_time, pkt_size, prevent_feedback) = match pkt {
+		Packet(p) => (0, usize::from(p.get()), false),
+		Missing(_t) => (0, stat.predict_voice_pkt() as usize, true),
 		Silence(t) => {
-			let out = u64::from(*t);
-			(out.min(max_silence.unwrap_or(out)), 0)
-		}
+			let out = u64::from(t);
+			(out.min(max_silence.unwrap_or(out)), 0, false)
+		},
 	};
 
 	sleep_time += 20;
+
+	if pkt_size > 0 {
+		stat.register_voice(pkt_size, prevent_feedback);
+	}
 
 	(sleep_time, pkt_size)
 }

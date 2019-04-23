@@ -111,3 +111,17 @@ fn warn_and_unpack<T, E: Debug>(input: Result<T, E>) -> Option<T> {
 		why
 	}).ok()
 }
+
+pub fn largest_packet(trace: &[PacketChainLink]) -> Option<u16> {
+	let mut out = None;
+	for part in trace {
+		if let PacketChainLink::Packet(size) = part {
+			let size = size.get();
+			let target = out.get_or_insert(size);
+
+			*target = size.max(*target);
+		}
+	}
+
+	out
+}
