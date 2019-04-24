@@ -1,5 +1,9 @@
 use clap::{App, Arg};
-use opus_voip_traffic::Config;
+use opus_voip_traffic::{
+	Config,
+	IpStrategy,
+};
+use pnet::datalink;
 use std::{
 	net::ToSocketAddrs,
 	time::Duration,
@@ -13,6 +17,12 @@ fn main() {
 			.version("0.1.0")
 			.author("Kyle Simpson <k.simpson.1@research.gla.ac.uk>")
 			.about("Generate UDP traffic matching the distribution of Opus VOIP traffic")
+			// Show config?
+			.arg(Arg::with_name("show-config")
+				.short("S")
+				.long("show-config")
+				.help("Display program's configuration."))
+
 			// Base dir.
 			.arg(Arg::with_name("base-dir")
 				.short("b")
@@ -23,6 +33,7 @@ fn main() {
 				.default_value("."))
 
 			// Connectivity / main operation.
+			// FIXME: allow multiple IPs to be offered.
 			.arg(Arg::with_name("ip")
 				.short("i")
 				.long("ip")
@@ -41,6 +52,16 @@ fn main() {
 				.short("s")
 				.long("server")
 				.help("Run in server mode."))
+			.arg(Arg::with_name("iface")
+				.long("iface")
+				.help("Enable IP randomisation over target interface.")
+				.value_name("INTERFACE")
+				.takes_value(true))
+			.arg(Arg::with_name("ip-strategy")
+				.long("ip-strategy")
+				.help("Force generated IPs (from --iface) to be generated according to a known pattern ('even', 'odd').")
+				.value_name("PATTERN_NAME")
+				.takes_value(true))
 
 			// Call timing configs.
 			.arg(Arg::with_name("max-silence")
@@ -69,6 +90,9 @@ fn main() {
 			.arg(Arg::with_name("constant")
 				.long("constant")
 				.help("Constantly generate traffic."))
+			.arg(Arg::with_name("refresh")
+				.long("refresh")
+				.help("Generate new IP/Port/SSRC on call end."))
 
 			// Concurrent execution strains.
 			.arg(Arg::with_name("thread-count")
@@ -116,6 +140,27 @@ fn main() {
 		.expect("Server + port combination are invalid!")
 		.next().unwrap();
 
+	let interface = matches.value_of_lossy("iface")
+		.map(|if_name|
+			datalink::interfaces().iter()
+				.find(move |iface| iface.name == if_name)
+				.unwrap_or_else(||
+					panic!(
+						"Interface name wasn't valid: consider one of {:?}.",
+						datalink::interfaces().into_iter().map(|iface| iface.name).collect::<Vec<_>>(),
+					)
+				)
+				.clone()
+		);
+
+	let ip_modifier = matches.value_of_lossy("ip-strategy")
+		.and_then(|name| match &*name {
+			"even" => Some(IpStrategy::Even),
+			"odd" => Some(IpStrategy::Odd),
+			_ => None,
+		})
+		.unwrap_or(IpStrategy::Vanilla);
+
 	let max_silence = matches.value_of_lossy("max-silence")
 		.map(|s|
 			s.parse::<u64>()
@@ -137,6 +182,8 @@ fn main() {
 	let randomise_duration = matches.is_present("randomise");
 
 	let constant = matches.is_present("constant");
+
+	let refresh = matches.is_present("refresh");
 
 	let thread_count = matches.value_of_lossy("thread-count")
 		.expect("Thread count always guaranteed to exist.")
@@ -164,12 +211,15 @@ fn main() {
 
 		address,
 		port,
+		interface,
+		ip_modifier,
 
 		max_silence,
 		duration_lb,
 		duration_ub,
 		randomise_duration,
 		constant,
+		refresh,
 
 		thread_count,
 
@@ -177,6 +227,10 @@ fn main() {
 		max_room_size,
 		split_rooms,
 	};
+
+	if matches.is_present("show-config") {
+		println!("{:#?}", config);
+	}
 
 	if matches.is_present("server") {
 		opus_voip_traffic::server(&config);

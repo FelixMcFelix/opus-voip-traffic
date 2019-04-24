@@ -6,7 +6,7 @@ mod constants;
 mod stats;
 mod trace;
 
-pub use config::Config;
+pub use config::*;
 use constants::*;
 use stats::CallStats;
 use trace::*;
@@ -25,6 +25,27 @@ use net2::{
 	unix::UnixUdpBuilderExt,
 	UdpBuilder,
 };
+use pnet::{
+	datalink::{
+		self,
+		Channel::Ethernet,
+		DataLinkReceiver,
+		DataLinkSender,
+		MacAddr,
+	},
+	packet::{
+		ethernet::{
+			EtherTypes,
+			MutableEthernetPacket,
+		},
+		ip::IpNextHeaderProtocols,
+		ipv4::{
+			self,
+			MutableIpv4Packet,
+		},
+		udp::MutableUdpPacket,
+	}
+};
 use rand::{
 	distributions::{
 		Uniform,
@@ -38,6 +59,8 @@ use std::{
 		Result as IoResult,
 	},
 	net::{
+		IpAddr,
+		Ipv4Addr,
 		UdpSocket,
 		SocketAddr,
 	},
@@ -47,6 +70,8 @@ use std::{
 		Instant,
 	},
 };
+
+type RawSock = (Box<dyn DataLinkSender>, Box<dyn DataLinkReceiver>);
 
 fn make_udp_socket(port: u16, non_block: bool) -> IoResult<UdpSocket> {
 	let out = UdpBuilder::new_v4()?;
@@ -84,9 +109,84 @@ pub fn client(config: &Config) {
 	}).unwrap();
 }
 
+#[inline]
+fn send_packet(
+	src_port: u16,
+	ip: Ipv4Addr,
+	physical_if: &mut Option<RawSock>,
+	udp_sock: &UdpSocket,
+	udp_body: &[u8],
+	config: &Config,
+) {
+	if let Some((tx, _rx)) = physical_if {
+		// sort of have to build from scratch if we want to write
+		// straight over the NIC.
+		let mut ethernet_buf = [0u8;
+			ETH_HEADER_LEN
+			+ IPV4_HEADER_LEN
+			+ UDP_HEADER_LEN
+			+ 1560 // max udp, for safety
+		];
+
+		{
+			let mut eth_pkt = MutableEthernetPacket::new(&mut ethernet_buf)
+				.expect("Plenty of room...");
+			eth_pkt.set_destination(MacAddr::broadcast());
+			// not important to set source, not interested in receiving a reply...
+			eth_pkt.set_ethertype(EtherTypes::Ipv4);
+		}
+
+		{
+			let mut ipv4_pkt = MutableIpv4Packet::new(&mut ethernet_buf[ETH_HEADER_LEN..])
+				.expect("Plenty of room...");
+			ipv4_pkt.set_version(4);
+			ipv4_pkt.set_header_length(5);
+			ipv4_pkt.set_total_length((IPV4_HEADER_LEN + UDP_HEADER_LEN + udp_body.len()) as u16);
+			ipv4_pkt.set_ttl(64);
+			ipv4_pkt.set_next_level_protocol(IpNextHeaderProtocols::Udp);
+			ipv4_pkt.set_destination(match config.address.ip() {
+				IpAddr::V4(a) => a,
+				_ => panic!("IPv6 currently unsupported."),
+			});
+			ipv4_pkt.set_source(ip);
+
+			let csum = ipv4::checksum(&ipv4_pkt.to_immutable());
+			ipv4_pkt.set_checksum(csum);
+		}
+
+		{
+			let mut udp_pkt = MutableUdpPacket::new(&mut ethernet_buf[ETH_HEADER_LEN + IPV4_HEADER_LEN..])
+				.expect("Plenty of room...");
+			udp_pkt.set_source(src_port);
+			udp_pkt.set_destination(config.address.port());
+			udp_pkt.set_length((UDP_HEADER_LEN + udp_body.len()) as u16);
+			udp_pkt.set_payload(udp_body);
+			// checksum is optional in ipv4
+			udp_pkt.set_checksum(0);
+		}
+
+		let outsize = ETH_HEADER_LEN
+			+ IPV4_HEADER_LEN
+			+ UDP_HEADER_LEN
+			+ udp_body.len();
+
+		tx.send_to(&ethernet_buf[..outsize], None);
+	} else {
+		let _ = udp_sock.send_to(udp_body, &config.address);
+	}
+}
+
 fn inner_client(config: &Config, ts: &TraceHolder, kill_signal: &Receiver<()>) {
 	let mut rng = thread_rng();
 
+	let mut naked_if = config.interface.as_ref()
+		.map(|iface| match datalink::channel(&iface, Default::default()) {
+			Ok(Ethernet(tx, rx)) => (tx, rx),
+			Ok(_) => panic!("Unexpected channel variant."),
+			Err(e) => panic!("Failed to bind to interface (MAY NEED SUDO): {:?}", e),
+		});
+
+	let ephemeral_ports = Uniform::new_inclusive(31000, 61000);
 	let draw = Uniform::new(0, ts.len());
 
 	let mut buf = [0u8; 1560];
@@ -109,10 +209,11 @@ fn inner_client(config: &Config, ts: &TraceHolder, kill_signal: &Receiver<()>) {
 		config.duration_ub
 	};
 
-	let port = 0;
-	let socket = make_udp_socket(port, true).unwrap();
+	let socket = make_udp_socket(0, true).unwrap();
+	let mut desired_ip = generate_ip4(&mut rng, config.ip_modifier);
+	let mut port = rng.sample(ephemeral_ports);
 
-	let ssrc = rng.gen::<u32>();
+	let mut ssrc = rng.gen::<u32>();
 	(&mut buf[8..12]).write_u32::<NetworkEndian>(ssrc)
 		.expect("Guaranteed to be large enough.");
 
@@ -120,6 +221,20 @@ fn inner_client(config: &Config, ts: &TraceHolder, kill_signal: &Receiver<()>) {
 	// BUT if there's a RANDOM UB defined, we need to keep drawing to hit that.
 	let mut not_gone = true;
 	while not_gone || config.constant || start.elapsed() < config.duration_lb || (config.randomise_duration && start.elapsed() < end.unwrap()) {
+		// generate (another) identity.
+		if config.refresh {
+			desired_ip = generate_ip4(&mut rng, config.ip_modifier);
+
+			ssrc = rng.gen::<u32>();
+			(&mut buf[8..12]).write_u32::<NetworkEndian>(ssrc)
+				.expect("Guaranteed to be large enough.");
+
+			port = rng.sample(ephemeral_ports);
+
+			ka_count = 1;
+			ka_time = None;
+		}
+
 		not_gone = false;
 		let chosen_el = draw.sample(&mut rng);
 		info!("Chose trace no: {}", chosen_el);
@@ -146,7 +261,14 @@ fn inner_client(config: &Config, ts: &TraceHolder, kill_signal: &Receiver<()>) {
 				let udp_payload_size = pkt_size + CMAC_BYTES + RTP_BYTES;
 
 				info!("Sending packet of size {} ({} audio).", udp_payload_size, pkt_size);
-				let _ = socket.send_to(&buf[..udp_payload_size], &config.address);
+				send_packet(
+					port,
+					desired_ip,
+					&mut naked_if,
+					&socket,
+					&buf[..udp_payload_size],
+					config,
+				);
 			}
 
 			loop {
@@ -167,7 +289,14 @@ fn inner_client(config: &Config, ts: &TraceHolder, kill_signal: &Receiver<()>) {
 						.expect("Guaranteed to be large enough.");
 
 					info!("Sending keep-alive {}.", ka_count);
-					let _ = socket.send_to(&ka_buf[..], &config.address);
+					send_packet(
+						port,
+						desired_ip,
+						&mut naked_if,
+						&socket,
+						&ka_buf[..],
+						config,
+					);
 					ka_count += 1;
 					ka_time = Some(Instant::now());
 				}
@@ -398,4 +527,43 @@ fn handle_link(
 	}
 
 	(sleep_time, pkt_size)
+}
+
+
+fn generate_ip4<R: Rng + ?Sized>(rng: &mut R, strat: IpStrategy) -> Ipv4Addr {
+	let mut bytes = [0u8; 4];
+
+	// First byte limited to between 1-223.
+	// For simplicity, ensure we cannot start an IP with 10, 127, 172.
+	// To keep uniformity, skip these.
+	let a_distr = Uniform::new_inclusive(1, 220);
+	bytes[0] = rng.sample(a_distr);
+
+	if bytes[0] >= 10 {
+		bytes[0] += 1;
+	}
+	if bytes[0] >= 127 {
+		bytes[0] += 1;
+	}
+	if bytes[0] >= 172 {
+		bytes[0] += 1;
+	}
+
+	// We can't prevent an IP from being broadcast/gateway unless we know what
+	// the prefix length is. I'm assuming /32 prefix...
+	for b in &mut bytes[1..] {
+		*b = rng.gen();
+	}
+
+	match strat {
+		IpStrategy::Even => {
+			bytes[3] &= 0b1111_1110;
+		},
+		IpStrategy::Odd => {
+			bytes[3] |= 0b0000_0001;
+		},
+		_ => {},
+	}
+
+	Ipv4Addr::from(bytes)
 }
