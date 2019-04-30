@@ -102,6 +102,11 @@ fn main() {
 				.help("Amount of concurrent calls to host (client).")
 				.takes_value(true)
 				.default_value("1"))
+			.arg(Arg::with_name("sessions-per-thread")
+				.long("sessions-per-thread")
+				.takes_value(true)
+				.default_value("1")
+				.help("Maximum amount of different calls to gather in a thread."))
 
 			// Dry-run mode, for stats gathering.
 			.arg(Arg::with_name("stats")
@@ -190,6 +195,11 @@ fn main() {
 		.parse::<usize>()
 		.expect("Thread count must be an integer.");
 
+	let sessions_per_thread = matches.value_of_lossy("sessions-per-thread")
+		.expect("SPT count always guaranteed to exist.")
+		.parse::<usize>()
+		.expect("Session-per-thread count must be an integer.");
+
 	let min_room_size = matches.value_of_lossy("min-room-size")
 		.expect("Room minimum always guaranteed to exist.")
 		.parse::<usize>()
@@ -222,6 +232,7 @@ fn main() {
 		refresh,
 
 		thread_count,
+		sessions_per_thread,
 
 		min_room_size,
 		max_room_size,

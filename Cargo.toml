@@ -6,6 +6,7 @@ edition = "2018"
 
 [profile.release]
 lto = true
+debug = true
 
 [dependencies]
 bincode = "1"
