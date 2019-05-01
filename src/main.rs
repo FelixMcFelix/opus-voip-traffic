@@ -6,7 +6,10 @@ use opus_voip_traffic::{
 use pnet::datalink;
 use std::{
 	net::ToSocketAddrs,
-	time::Duration,
+	time::{
+		Duration,
+		Instant,
+	},
 };
 
 fn main() {
@@ -112,6 +115,11 @@ fn main() {
 			.arg(Arg::with_name("stats")
 				.long("stats")
 				.help("Generate overall trace statistics."))
+
+			// Trace pre-processing
+			.arg(Arg::with_name("trace-process")
+				.long("trace-process")
+				.help("Process/convert traces for faster reading."))
 
 			// Server configs.
 			.arg(Arg::with_name("min-room-size")
@@ -246,7 +254,11 @@ fn main() {
 	if matches.is_present("server") {
 		opus_voip_traffic::server(&config);
 	} else if matches.is_present("stats") {
+		let t = Instant::now();
 		opus_voip_traffic::gen_stats(&config);
+		println!("Took: {:?}", t.elapsed().as_millis());
+	} else if matches.is_present("trace-process") {
+		opus_voip_traffic::convert_traces(&config);
 	} else {
 		opus_voip_traffic::client(&config);
 	}

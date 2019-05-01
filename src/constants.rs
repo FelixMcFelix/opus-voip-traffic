@@ -9,3 +9,4 @@ pub const UDP_HEADER_LEN: usize = 8;
 
 pub const KEEPALIVE_FREQ_MS: u64 = 5000;
 pub const TRACE_DIR: &str = "traces/";
+pub const SPEEDY_TRACE_DIR: &str = "s-traces/";

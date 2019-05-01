@@ -4,6 +4,7 @@ use crate::constants::*;
 
 use parking_lot::RwLock;
 use rayon::prelude::*;
+use speedy::{Endianness, Readable, Writable};
 use std::{
 	fmt::Debug,
 	fs::{
@@ -16,6 +17,7 @@ use std::{
 
 pub(crate) use packet_format::*;
 
+pub type OldTrace = Vec<OldPacketChainLink>;
 pub type Trace = Vec<PacketChainLink>;
 pub type MemoTrace = Arc<RwLock<Option<Trace>>>;
 
@@ -59,7 +61,7 @@ impl TraceHolder {
 			if value.is_none() {
 				*value = Some(File::open(&self.paths[i])
 					.ok()
-					.and_then(|f| bincode::deserialize_from(f).ok())
+					.and_then(|f| Trace::read_from_stream(Endianness::LittleEndian, f).ok())
 					.unwrap()
 				);
 			}
@@ -73,8 +75,33 @@ impl TraceHolder {
 	}
 }
 
+pub fn convert_all_traces(base_dir: &str) {
+	let target_dir = format!("{}/{}", base_dir, SPEEDY_TRACE_DIR);
+	fs::create_dir_all(&target_dir)
+		.expect("Need a directory to write trace files to...");
+
+	let data = read_traces(base_dir);
+	data.par_iter()
+		.for_each(|(trace, path)| {
+			let f = File::create(
+				&format!("{}/{}",
+					&target_dir,
+					path.file_name()
+						.as_ref()
+						.expect("File name should correspond.")
+						.to_string_lossy()
+				))
+				.expect("Couldn't open file...");
+
+			let o: Trace = trace.into_iter().map(Into::into).collect();
+
+			o.write_to_stream(Endianness::LittleEndian, f)
+				.expect("Somehow couldn't serialise?");
+		});
+}
+
 pub fn read_traces_memo(base_dir: &str) -> TraceHolder {
-	let file_entries: Vec<PathBuf> = fs::read_dir(&format!("{}/{}", base_dir, TRACE_DIR))
+	let file_entries: Vec<PathBuf> = fs::read_dir(&format!("{}/{}", base_dir, SPEEDY_TRACE_DIR))
 		.expect("Couldn't read files in trace directory...")
 		.filter_map(|x| if let Ok(x) = x {
 			Some(x.path())
@@ -86,7 +113,7 @@ pub fn read_traces_memo(base_dir: &str) -> TraceHolder {
 	TraceHolder::new(file_entries)
 }
 
-pub fn read_traces(base_dir: &str) -> Vec<Trace> {
+pub fn read_traces(base_dir: &str) -> Vec<(OldTrace, PathBuf)> {
 	let file_entries: Vec<PathBuf> = fs::read_dir(&format!("{}/{}", base_dir, TRACE_DIR))
 		.expect("Couldn't read files in trace directory...")
 		.filter_map(|x| if let Ok(x) = x {
@@ -101,7 +128,10 @@ pub fn read_traces(base_dir: &str) -> Vec<Trace> {
 		.filter_map(warn_and_unpack)
 		.map(bincode::deserialize_from)
 		.filter_map(warn_and_unpack)
-		.filter(|x: &Trace| !x.is_empty())
+		.collect::<Vec<OldTrace>>()
+		.into_iter()
+		.zip(file_entries)
+		.filter(|x: &(OldTrace, PathBuf)| !x.0.is_empty())
 		.collect()
 }
 
@@ -116,10 +146,10 @@ pub fn largest_packet(trace: &[PacketChainLink]) -> Option<u16> {
 	let mut out = None;
 	for part in trace {
 		if let PacketChainLink::Packet(size) = part {
-			let size = size.get();
-			let target = out.get_or_insert(size);
+			let size = size;
+			let target = out.get_or_insert(*size);
 
-			*target = size.max(*target);
+			*target = *size.max(target);
 		}
 	}
 

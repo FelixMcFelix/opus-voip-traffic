@@ -330,6 +330,8 @@ dependencies = [
  "rand 0.6.5 (registry+https://github.com/rust-lang/crates.io-index)",
  "rayon 1.0.3 (registry+https://github.com/rust-lang/crates.io-index)",
  "serde 1.0.90 (registry+https://github.com/rust-lang/crates.io-index)",
+ "speedy 0.4.2 (registry+https://github.com/rust-lang/crates.io-index)",
+ "speedy-derive 0.3.6 (registry+https://github.com/rust-lang/crates.io-index)",
 ]
 
 [[package]]
@@ -676,6 +678,24 @@ version = "0.6.9"
 source = "registry+https://github.com/rust-lang/crates.io-index"
 
 [[package]]
+name = "speedy"
+version = "0.4.2"
+source = "registry+https://github.com/rust-lang/crates.io-index"
+dependencies = [
+ "byteorder 1.3.1 (registry+https://github.com/rust-lang/crates.io-index)",
+]
+
+[[package]]
+name = "speedy-derive"
+version = "0.3.6"
+source = "registry+https://github.com/rust-lang/crates.io-index"
+dependencies = [
+ "proc-macro2 0.4.28 (registry+https://github.com/rust-lang/crates.io-index)",
+ "quote 0.6.12 (registry+https://github.com/rust-lang/crates.io-index)",
+ "syn 0.15.32 (registry+https://github.com/rust-lang/crates.io-index)",
+]
+
+[[package]]
 name = "stable_deref_trait"
 version = "1.1.1"
 source = "registry+https://github.com/rust-lang/crates.io-index"
@@ -949,6 +969,8 @@ dependencies = [
 "checksum serde 1.0.90 (registry+https://github.com/rust-lang/crates.io-index)" = "aa5f7c20820475babd2c077c3ab5f8c77a31c15e16ea38687b4c02d3e48680f4"
 "checksum serde_derive 1.0.90 (registry+https://github.com/rust-lang/crates.io-index)" = "58fc82bec244f168b23d1963b45c8bf5726e9a15a9d146a067f9081aeed2de79"
 "checksum smallvec 0.6.9 (registry+https://github.com/rust-lang/crates.io-index)" = "c4488ae950c49d403731982257768f48fada354a5203fe81f9bb6f43ca9002be"
+"checksum speedy 0.4.2 (registry+https://github.com/rust-lang/crates.io-index)" = "fd12288d3dc90947a7b5fd46f927c945508dd2656e8a0ba11448e24fe0d108a9"
+"checksum speedy-derive 0.3.6 (registry+https://github.com/rust-lang/crates.io-index)" = "4bb72aaf31e8f58dd6646252dd0ba29a86ef236ae40191191245110face0755d"
 "checksum stable_deref_trait 1.1.1 (registry+https://github.com/rust-lang/crates.io-index)" = "dba1a27d3efae4351c8051072d619e3ade2820635c3958d826bfea39d59b54c8"
 "checksum strsim 0.8.0 (registry+https://github.com/rust-lang/crates.io-index)" = "8ea5119cdb4c55b55d432abb513a0429384878c15dde60cc77b1c99de1a95a6a"
 "checksum syn 0.15.32 (registry+https://github.com/rust-lang/crates.io-index)" = "846620ec526c1599c070eff393bfeeeb88a93afa2513fc3b49f1fea84cf7b0ed"

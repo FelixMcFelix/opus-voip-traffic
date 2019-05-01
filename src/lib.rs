@@ -1,5 +1,7 @@
 #[macro_use]
 extern crate log;
+#[macro_use]
+extern crate speedy_derive;
 
 mod config;
 mod constants;
@@ -88,6 +90,10 @@ fn make_udp_socket(port: u16, non_block: bool) -> IoResult<UdpSocket> {
 	Ok(out)
 }
 
+pub fn convert_traces(config: &Config) {
+	convert_all_traces(&config.base_dir);
+}
+
 pub fn client(config: &Config) {
 	let ts = trace::read_traces_memo(&config.base_dir);
 	let (kill_tx, kill_rx) = channel::bounded(1);
@@ -110,24 +116,15 @@ pub fn client(config: &Config) {
 }
 
 #[inline]
-fn send_packet(
+fn prep_packet(
+	mut ethernet_buf: &mut [u8],
 	src_port: u16,
 	ip: Ipv4Addr,
-	physical_if: &mut Option<RawSock>,
-	udp_sock: &UdpSocket,
-	udp_body: &[u8],
 	config: &Config,
-) {
-	if let Some((tx, _rx)) = physical_if {
+) -> usize {
+	if config.interface.is_some() {
 		// sort of have to build from scratch if we want to write
 		// straight over the NIC.
-		let mut ethernet_buf = [0u8;
-			ETH_HEADER_LEN
-			+ IPV4_HEADER_LEN
-			+ UDP_HEADER_LEN
-			+ 1560 // max udp, for safety
-		];
-
 		{
 			let mut eth_pkt = MutableEthernetPacket::new(&mut ethernet_buf)
 				.expect("Plenty of room...");
@@ -141,7 +138,6 @@ fn send_packet(
 				.expect("Plenty of room...");
 			ipv4_pkt.set_version(4);
 			ipv4_pkt.set_header_length(5);
-			ipv4_pkt.set_total_length((IPV4_HEADER_LEN + UDP_HEADER_LEN + udp_body.len()) as u16);
 			ipv4_pkt.set_ttl(64);
 			ipv4_pkt.set_next_level_protocol(IpNextHeaderProtocols::Udp);
 			ipv4_pkt.set_destination(match config.address.ip() {
@@ -149,6 +145,36 @@ fn send_packet(
 				_ => panic!("IPv6 currently unsupported."),
 			});
 			ipv4_pkt.set_source(ip);
+		}
+
+		{
+			let mut udp_pkt = MutableUdpPacket::new(&mut ethernet_buf[ETH_HEADER_LEN + IPV4_HEADER_LEN..])
+				.expect("Plenty of room...");
+			udp_pkt.set_source(src_port);
+			udp_pkt.set_destination(config.address.port());
+			// checksum is optional in ipv4
+			udp_pkt.set_checksum(0);
+		}
+
+		ETH_HEADER_LEN + IPV4_HEADER_LEN + UDP_HEADER_LEN
+	} else {
+		0
+	}
+}
+
+#[inline]
+fn send_packet(
+	ethernet_buf: &mut [u8],
+	physical_if: &mut Option<RawSock>,
+	udp_sock: &UdpSocket,
+	udp_len: usize,
+	config: &Config,
+) {
+	if let Some((tx, _rx)) = physical_if {
+		{
+			let mut ipv4_pkt = MutableIpv4Packet::new(&mut ethernet_buf[ETH_HEADER_LEN..])
+				.expect("Plenty of room...");
+			ipv4_pkt.set_total_length((IPV4_HEADER_LEN + UDP_HEADER_LEN + udp_len) as u16);
 
 			let csum = ipv4::checksum(&ipv4_pkt.to_immutable());
 			ipv4_pkt.set_checksum(csum);
@@ -157,22 +183,12 @@ fn send_packet(
 		{
 			let mut udp_pkt = MutableUdpPacket::new(&mut ethernet_buf[ETH_HEADER_LEN + IPV4_HEADER_LEN..])
 				.expect("Plenty of room...");
-			udp_pkt.set_source(src_port);
-			udp_pkt.set_destination(config.address.port());
-			udp_pkt.set_length((UDP_HEADER_LEN + udp_body.len()) as u16);
-			udp_pkt.set_payload(udp_body);
-			// checksum is optional in ipv4
-			udp_pkt.set_checksum(0);
+			udp_pkt.set_length((UDP_HEADER_LEN + udp_len) as u16);
 		}
 
-		let outsize = ETH_HEADER_LEN
-			+ IPV4_HEADER_LEN
-			+ UDP_HEADER_LEN
-			+ udp_body.len();
-
-		tx.send_to(&ethernet_buf[..outsize], None);
+		tx.send_to(&ethernet_buf, None);
 	} else {
-		let _ = udp_sock.send_to(udp_body, &config.address);
+		let _ = udp_sock.send_to(&ethernet_buf[..udp_len], &config.address);
 	}
 }
 
@@ -194,7 +210,7 @@ fn inner_client(config: &Config, ts: &TraceHolder, kill_signal: &Receiver<()>) {
 
 	let ka_freq = Duration::from_millis(KEEPALIVE_FREQ_MS);
 	let mut ka_count: u64 = 1;
-	let mut ka_buf = [0u8; KEEPALIVE_SIZE];
+	let mut ka_buf = [0u8; ETH_HEADER_LEN + IPV4_HEADER_LEN + UDP_HEADER_LEN + KEEPALIVE_SIZE];
 	let mut ka_time = None;
 
 	let start = Instant::now();
@@ -213,8 +229,21 @@ fn inner_client(config: &Config, ts: &TraceHolder, kill_signal: &Receiver<()>) {
 	let mut desired_ip = generate_ip4(&mut rng, config.ip_modifier);
 	let mut port = rng.sample(ephemeral_ports);
 
+	let mut space_start = prep_packet(
+		&mut buf,
+		port,
+		desired_ip,
+		config,
+	);
+	let _ = prep_packet(
+		&mut ka_buf,
+		port,
+		desired_ip,
+		config,
+	);
+
 	let mut ssrc = rng.gen::<u32>();
-	(&mut buf[8..12]).write_u32::<NetworkEndian>(ssrc)
+	(&mut buf[space_start+8..space_start+12]).write_u32::<NetworkEndian>(ssrc)
 		.expect("Guaranteed to be large enough.");
 
 	// IDEA: if we haven't passed the LB then draw another entry.
@@ -225,11 +254,25 @@ fn inner_client(config: &Config, ts: &TraceHolder, kill_signal: &Receiver<()>) {
 		if config.refresh {
 			desired_ip = generate_ip4(&mut rng, config.ip_modifier);
 
-			ssrc = rng.gen::<u32>();
-			(&mut buf[8..12]).write_u32::<NetworkEndian>(ssrc)
-				.expect("Guaranteed to be large enough.");
-
 			port = rng.sample(ephemeral_ports);
+
+			space_start = prep_packet(
+				&mut buf,
+				port,
+				desired_ip,
+				config,
+			);
+
+			let _ = prep_packet(
+				&mut ka_buf,
+				port,
+				desired_ip,
+				config,
+			);
+
+			ssrc = rng.gen::<u32>();
+			(&mut buf[space_start+8..space_start+12]).write_u32::<NetworkEndian>(ssrc)
+				.expect("Guaranteed to be large enough.");
 
 			ka_count = 1;
 			ka_time = None;
@@ -249,24 +292,22 @@ fn inner_client(config: &Config, ts: &TraceHolder, kill_signal: &Receiver<()>) {
 		let mut stat = CallStats::new();
 
 		for pkt in el {
+			// FIXME: make sleep routine aware of any excess time consumed in packet prep/send.
 			let (mut sleep_time, pkt_size) = handle_link(
 				*pkt,
 				&mut stat,
 				&config.max_silence,
 			);
 
-			sleep_time += 20;
-
 			if pkt_size > 0 {
 				let udp_payload_size = pkt_size + CMAC_BYTES + RTP_BYTES;
 
 				info!("Sending packet of size {} ({} audio).", udp_payload_size, pkt_size);
 				send_packet(
-					port,
-					desired_ip,
+					&mut buf[..space_start+udp_payload_size],
 					&mut naked_if,
 					&socket,
-					&buf[..udp_payload_size],
+					udp_payload_size,
 					config,
 				);
 			}
@@ -285,16 +326,15 @@ fn inner_client(config: &Config, ts: &TraceHolder, kill_signal: &Receiver<()>) {
 
 				// send keep alive if needed.
 				if ka_time.map(|t: Instant| t.elapsed() >= ka_freq).unwrap_or(true) {
-					(&mut ka_buf[..]).write_u64::<LittleEndian>(ka_count)
+					(&mut ka_buf[space_start..space_start+KEEPALIVE_SIZE]).write_u64::<LittleEndian>(ka_count)
 						.expect("Guaranteed to be large enough.");
 
 					info!("Sending keep-alive {}.", ka_count);
 					send_packet(
-						port,
-						desired_ip,
+						&mut ka_buf[..space_start+KEEPALIVE_SIZE],
 						&mut naked_if,
 						&socket,
-						&ka_buf[..],
+						KEEPALIVE_SIZE,
 						config,
 					);
 					ka_count += 1;
@@ -341,6 +381,7 @@ pub fn server(config: &Config) {
 				PacketType::KeepAlive => {
 					// Bounce the message back to them.
 					let _ = socket.send_to(&buf[..sz], addr);
+					info!("Saw keepalive, replying...");
 				},
 				PacketType::Rtp => {
 					// Find the room, send to everyone else in the room.
@@ -365,7 +406,11 @@ pub fn server(config: &Config) {
 
 					let _ = ip_map.insert(ssrc, addr);
 
-					for o_addr in rooms[*found_room].iter() {
+					let room = &rooms[*found_room];
+					info!("Saw message from {:?}, forwarding ({})...", addr, room.len());
+					info!("Total rooms {:?}...", rooms.len());
+
+					for o_addr in room {
 						if *o_addr != addr {
 							let _ = socket.send_to(&buf[..sz], o_addr);
 						}
@@ -512,7 +557,7 @@ fn handle_link(
 	use PacketChainLink::*;
 
 	let (mut sleep_time, pkt_size, prevent_feedback) = match pkt {
-		Packet(p) => (0, usize::from(p.get()), false),
+		Packet(p) => (0, usize::from(p), false),
 		Missing(_t) => (0, stat.predict_voice_pkt() as usize, true),
 		Silence(t) => {
 			let out = u64::from(t);
