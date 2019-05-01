@@ -122,7 +122,7 @@ fn prep_packet(
 	ip: Ipv4Addr,
 	config: &Config,
 ) -> usize {
-	if config.interface.is_some() {
+	if let Some(iface) = &config.interface {
 		// sort of have to build from scratch if we want to write
 		// straight over the NIC.
 		{
@@ -131,6 +131,9 @@ fn prep_packet(
 			eth_pkt.set_destination(MacAddr::broadcast());
 			// not important to set source, not interested in receiving a reply...
 			eth_pkt.set_ethertype(EtherTypes::Ipv4);
+			if let Some(mac) = &iface.mac {
+				eth_pkt.set_source(*mac);
+			}
 		}
 
 		{
