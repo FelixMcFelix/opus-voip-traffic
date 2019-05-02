@@ -119,7 +119,8 @@ pub fn client(config: &Config) {
 fn prep_packet(
 	mut ethernet_buf: &mut [u8],
 	src_port: u16,
-	ip: Ipv4Addr,
+	dest_addr: &SocketAddr,
+	src_ip: Ipv4Addr,
 	config: &Config,
 ) -> usize {
 	if let Some(iface) = &config.interface {
@@ -143,18 +144,18 @@ fn prep_packet(
 			ipv4_pkt.set_header_length(5);
 			ipv4_pkt.set_ttl(64);
 			ipv4_pkt.set_next_level_protocol(IpNextHeaderProtocols::Udp);
-			ipv4_pkt.set_destination(match config.address.ip() {
+			ipv4_pkt.set_destination(match dest_addr.ip() {
 				IpAddr::V4(a) => a,
 				_ => panic!("IPv6 currently unsupported."),
 			});
-			ipv4_pkt.set_source(ip);
+			ipv4_pkt.set_source(src_ip);
 		}
 
 		{
 			let mut udp_pkt = MutableUdpPacket::new(&mut ethernet_buf[ETH_HEADER_LEN + IPV4_HEADER_LEN..])
 				.expect("Plenty of room...");
 			udp_pkt.set_source(src_port);
-			udp_pkt.set_destination(config.address.port());
+			udp_pkt.set_destination(dest_addr.port());
 			// checksum is optional in ipv4
 			udp_pkt.set_checksum(0);
 		}
@@ -169,9 +170,9 @@ fn prep_packet(
 fn send_packet(
 	ethernet_buf: &mut [u8],
 	physical_if: &mut Option<RawSock>,
+	dest_addr: &SocketAddr,
 	udp_sock: &UdpSocket,
 	udp_len: usize,
-	config: &Config,
 ) {
 	if let Some((tx, _rx)) = physical_if {
 		{
@@ -191,7 +192,7 @@ fn send_packet(
 
 		tx.send_to(&ethernet_buf, None);
 	} else {
-		let _ = udp_sock.send_to(&ethernet_buf[..udp_len], &config.address);
+		let _ = udp_sock.send_to(&ethernet_buf[..udp_len], dest_addr);
 	}
 }
 
@@ -207,6 +208,7 @@ fn inner_client(config: &Config, ts: &TraceHolder, kill_signal: &Receiver<()>) {
 
 	let ephemeral_ports = Uniform::new_inclusive(31000, 61000);
 	let draw = Uniform::new(0, ts.len());
+	let ip_draw = Uniform::new(0, config.addresses.len());
 
 	let mut buf = [0u8; 1560];
 	let mut rxbuf = [0u8; 1560];
@@ -231,16 +233,22 @@ fn inner_client(config: &Config, ts: &TraceHolder, kill_signal: &Receiver<()>) {
 	let socket = make_udp_socket(0, true).unwrap();
 	let mut desired_ip = generate_ip4(&mut rng, config.ip_modifier);
 	let mut port = rng.sample(ephemeral_ports);
+	let mut dest_addr = config.addresses.get(rng.sample(ip_draw))
+		.expect("Should really be a valid selection...");
+
+	info!("Drew target IP {:?}", dest_addr);
 
 	let mut space_start = prep_packet(
 		&mut buf,
 		port,
+		dest_addr,
 		desired_ip,
 		config,
 	);
 	let _ = prep_packet(
 		&mut ka_buf,
 		port,
+		dest_addr,
 		desired_ip,
 		config,
 	);
@@ -262,6 +270,7 @@ fn inner_client(config: &Config, ts: &TraceHolder, kill_signal: &Receiver<()>) {
 			space_start = prep_packet(
 				&mut buf,
 				port,
+				dest_addr,
 				desired_ip,
 				config,
 			);
@@ -269,6 +278,7 @@ fn inner_client(config: &Config, ts: &TraceHolder, kill_signal: &Receiver<()>) {
 			let _ = prep_packet(
 				&mut ka_buf,
 				port,
+				dest_addr,
 				desired_ip,
 				config,
 			);
@@ -279,6 +289,9 @@ fn inner_client(config: &Config, ts: &TraceHolder, kill_signal: &Receiver<()>) {
 
 			ka_count = 1;
 			ka_time = None;
+
+			dest_addr = config.addresses.get(rng.sample(ip_draw))
+				.expect("Should really be a valid selection...");
 		}
 
 		not_gone = false;
@@ -309,9 +322,9 @@ fn inner_client(config: &Config, ts: &TraceHolder, kill_signal: &Receiver<()>) {
 				send_packet(
 					&mut buf[..space_start+udp_payload_size],
 					&mut naked_if,
+					dest_addr,
 					&socket,
 					udp_payload_size,
-					config,
 				);
 			}
 
@@ -336,9 +349,9 @@ fn inner_client(config: &Config, ts: &TraceHolder, kill_signal: &Receiver<()>) {
 					send_packet(
 						&mut ka_buf[..space_start+KEEPALIVE_SIZE],
 						&mut naked_if,
+						dest_addr,
 						&socket,
 						KEEPALIVE_SIZE,
-						config,
 					);
 					ka_count += 1;
 					ka_time = Some(Instant::now());

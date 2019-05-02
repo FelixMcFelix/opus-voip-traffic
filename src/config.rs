@@ -10,7 +10,7 @@ pub struct Config {
 	pub base_dir: String,
 
 	// Connectivity
-	pub address: SocketAddr,
+	pub addresses: Vec<SocketAddr>,
 	pub port: u16,
 	pub interface: Option<NetworkInterface>,
 	pub ip_modifier: IpStrategy,

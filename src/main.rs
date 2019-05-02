@@ -41,7 +41,10 @@ fn main() {
 				.short("i")
 				.long("ip")
 				.value_name("IP")
-				.help("Server to send requests to.")
+				.help(
+					"Server(s) to send requests to. Offer multiple target IPs \
+					as a comma separated list ('127.0.0.1,10.0.0.1,192.168.1.32')."
+					)
 				.takes_value(true)
 				.default_value("10.0.0.1"))
 			.arg(Arg::with_name("port")
@@ -148,10 +151,14 @@ fn main() {
 		.parse::<u16>()
 		.expect("Port must be in range of 16-bit uint.");
 
-	let address = (ip.as_ref(), port)
-		.to_socket_addrs()
-		.expect("Server + port combination are invalid!")
-		.next().unwrap();
+	let addresses = ip.split(',')
+		.map(str::trim)
+		.map(move |found_ip| (found_ip, port))
+		.map(|a|
+			a.to_socket_addrs()
+				.expect("Server + port combination are invalid!"))
+		.flatten()
+		.collect();
 
 	let interface = matches.value_of_lossy("iface")
 		.map(|if_name|
@@ -227,7 +234,7 @@ fn main() {
 	let config = Config {
 		base_dir,
 
-		address,
+		addresses,
 		port,
 		interface,
 		ip_modifier,

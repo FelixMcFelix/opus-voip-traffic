@@ -93,7 +93,7 @@ pub fn convert_all_traces(base_dir: &str) {
 				))
 				.expect("Couldn't open file...");
 
-			let o: Trace = trace.into_iter().map(Into::into).collect();
+			let o: Trace = trace.iter().map(Into::into).collect();
 
 			o.write_to_stream(Endianness::LittleEndian, f)
 				.expect("Somehow couldn't serialise?");
