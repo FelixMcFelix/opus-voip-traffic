@@ -317,7 +317,10 @@ fn inner_client(config: &Config, ts: &TraceHolder, kill_signal: &Receiver<()>) {
 
 			if pkt_size > 0 {
 				let udp_payload_size = pkt_size + CMAC_BYTES + RTP_BYTES;
-
+				for i in 0..udp_payload_size-12 {
+					let byte = rng.gen::<u8>();
+					buf[space_start+12+i] = byte;
+				}
 				info!("Sending packet of size {} ({} audio).", udp_payload_size, pkt_size);
 				send_packet(
 					&mut buf[..space_start+udp_payload_size],
