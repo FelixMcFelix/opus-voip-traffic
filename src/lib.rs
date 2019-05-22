@@ -317,14 +317,12 @@ fn inner_client(config: &Config, ts: &TraceHolder, kill_signal: &Receiver<()>) {
 
 			if pkt_size > 0 {
 				let udp_payload_size = pkt_size + CMAC_BYTES + RTP_BYTES;
-				for i in 0..SSRC_START {
-					let byte = rng.gen::<u8>();
-					buf[space_start+i] = byte;
-				}
-				for i in 0..udp_payload_size-SSRC_END {
-					let byte = rng.gen::<u8>();
-					buf[space_start+SSRC_END+i] = byte;
-				}
+
+				// Fill all but the SSRC with random data.
+				let (_other_proto, udp_body) = buf.split_at_mut(space_start);
+				rng.fill(&mut udp_body[..SSRC_START]);
+				rng.fill(&mut udp_body[SSRC_END..udp_payload_size]);
+
 				info!("Sending packet of size {} ({} audio).", udp_payload_size, pkt_size);
 				send_packet(
 					&mut buf[..space_start+udp_payload_size],
