@@ -254,7 +254,7 @@ fn inner_client(config: &Config, ts: &TraceHolder, kill_signal: &Receiver<()>) {
 	);
 
 	let mut ssrc = rng.gen::<u32>();
-	(&mut buf[space_start+8..space_start+12]).write_u32::<NetworkEndian>(ssrc)
+	(&mut buf[space_start+SSRC_START..space_start+SSRC_END]).write_u32::<NetworkEndian>(ssrc)
 		.expect("Guaranteed to be large enough.");
 
 	// IDEA: if we haven't passed the LB then draw another entry.
@@ -284,7 +284,7 @@ fn inner_client(config: &Config, ts: &TraceHolder, kill_signal: &Receiver<()>) {
 			);
 
 			ssrc = rng.gen::<u32>();
-			(&mut buf[space_start+8..space_start+12]).write_u32::<NetworkEndian>(ssrc)
+			(&mut buf[space_start+SSRC_START..space_start+SSRC_END]).write_u32::<NetworkEndian>(ssrc)
 				.expect("Guaranteed to be large enough.");
 
 			ka_count = 1;
@@ -317,13 +317,13 @@ fn inner_client(config: &Config, ts: &TraceHolder, kill_signal: &Receiver<()>) {
 
 			if pkt_size > 0 {
 				let udp_payload_size = pkt_size + CMAC_BYTES + RTP_BYTES;
-				for i in 0..8 {
+				for i in 0..SSRC_START {
 					let byte = rng.gen::<u8>();
 					buf[space_start+i] = byte;
 				}
-				for i in 0..udp_payload_size-12 {
+				for i in 0..udp_payload_size-SSRC_END {
 					let byte = rng.gen::<u8>();
-					buf[space_start+12+i] = byte;
+					buf[space_start+SSRC_END+i] = byte;
 				}
 				info!("Sending packet of size {} ({} audio).", udp_payload_size, pkt_size);
 				send_packet(
@@ -408,7 +408,7 @@ pub fn server(config: &Config) {
 				},
 				PacketType::Rtp => {
 					// Find the room, send to everyone else in the room.
-					let ssrc = (&buf[8..12]).read_u32::<NetworkEndian>().unwrap();
+					let ssrc = (&buf[SSRC_START..SSRC_END]).read_u32::<NetworkEndian>().unwrap();
 
 					let found_room = room_map.entry(addr)
 						.or_insert_with(|| {
