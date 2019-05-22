@@ -317,6 +317,10 @@ fn inner_client(config: &Config, ts: &TraceHolder, kill_signal: &Receiver<()>) {
 
 			if pkt_size > 0 {
 				let udp_payload_size = pkt_size + CMAC_BYTES + RTP_BYTES;
+				for i in 0..8 {
+					let byte = rng.gen::<u8>();
+					buf[space_start+i] = byte;
+				}
 				for i in 0..udp_payload_size-12 {
 					let byte = rng.gen::<u8>();
 					buf[space_start+12+i] = byte;
