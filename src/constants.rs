@@ -1,3 +1,5 @@
+pub const SSRC_START: usize = 8;
+pub const SSRC_END: usize = 12;
 pub const CMAC_BYTES: usize = 16;
 pub const RTP_BYTES: usize = 12;
 pub const KEEPALIVE_SIZE: usize = 8;
