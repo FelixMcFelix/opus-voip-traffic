@@ -23,10 +23,10 @@ use crossbeam::channel::{
 	self,
 	Receiver,
 };
-use net2::{
-	unix::UnixUdpBuilderExt,
-	UdpBuilder,
-};
+#[cfg(target_family = "unix")]
+use net2::unix::UnixUdpBuilderExt;
+
+use net2::UdpBuilder;
 use pnet::{
 	datalink::{
 		self,
@@ -80,7 +80,8 @@ fn make_udp_socket(port: u16, non_block: bool) -> IoResult<UdpSocket> {
 	
 	out.reuse_address(true)?;
 
-	if !cfg!(windows) {
+	#[cfg(target_family = "unix")]
+	{
 		out.reuse_port(true)?;
 	}
 
